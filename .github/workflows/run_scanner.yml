@@ -3,7 +3,7 @@ name: Nasdaq y Crypto Scanner
 on:
   schedule:
     # Se ejecuta automáticamente cada 4 horas (puedes ajustarlo si prefieres)
-    - cron: '0 */4 * * *'
+    - cron: '0 */1 * * *'
   workflow_dispatch: # Permite ejecutarlo manualmente desde la página de GitHub
 
 jobs:
