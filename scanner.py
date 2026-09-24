@@ -1,146 +1,158 @@
 import os
+import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import warnings
-import requests
+from datetime import datetime
 
-warnings.filterwarnings('ignore')
+# ================= CONFIGURACIÓN DE TELEGRAM =================
+# Las credenciales se leen automáticamente de los Secrets de GitHub Actions
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-def get_all_assets_tickers():
-    url = 'https://en.wikipedia.org/wiki/NASDAQ-100'
-    nasdaq_tickers = []
-    try:
-        tables = pd.read_html(url)
-        for table in tables:
-            if 'Ticker' in table.columns:
-                nasdaq_tickers = table['Ticker'].tolist()
-                break
-            elif 'Symbol' in table.columns:
-                nasdaq_tickers = table['Symbol'].tolist()
-                break
-    except Exception:
-        nasdaq_tickers = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'NFLX', 'AMD', 'INTC']
+def send_telegram_message(message):
+    """Envía una notificación al chat de Telegram configurado."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Advertencia: Credenciales de Telegram no configuradas.")
+        return
     
-    crypto_tickers = ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'SOL-USD', 'XAUT-USD']
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message,
+        'parse_mode': 'Markdown'
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            print(f"Error al enviar Telegram: {response.text}")
+    except Exception as e:
+        print(f"Error de conexión con Telegram: {e}")
+
+# ================= LISTA COMPLETA DE ACTIVOS =================
+def get_all_assets_tickers():
+    """Retorna la lista completa del NASDAQ 100 + Criptos + XAUT."""
+    nasdaq_tickers = [
+        'AAPL', 'ABNB', 'ADBE', 'ADI', 'ADP', 'ADSK', 'AEP', 'ALGN', 'AMAT', 'AMD',
+        'AMGN', 'AMZN', 'ANSS', 'APP', 'ARM', 'ASML', 'AVGO', 'AXON', 'AZN', 'BIIB',
+        'BKNG', 'BKR', 'CCEP', 'CDNS', 'CDW', 'CEG', 'CHTR', 'CMCSA', 'COST', 'CPRT',
+        'CRWD', 'CSCO', 'CSGP', 'CSX', 'CTAS', 'CTSH', 'DASH', 'DDOG', 'DLTR', 'DXCM',
+        'EA', 'EXC', 'FAST', 'FTNT', 'GEHC', 'GFS', 'GOOG', 'GOOGL', 'HON', 'IDEXX',
+        'ILMN', 'INTC', 'INTU', 'ISRG', 'KDP', 'KHC', 'KLAC', 'LIN', 'LRCX', 'LULU',
+        'MAR', 'MCHP', 'MDLZ', 'MELI', 'META', 'MNST', 'MRNA', 'MSFT', 'MU', 'NFLX',
+        'NVDA', 'NXPI', 'ODFL', 'ON', 'ORLY', 'PANW', 'PAYX', 'PCAR', 'PDD', 'PEP',
+        'QCOM', 'REGN', 'ROP', 'ROST', 'SBUX', 'SMR', 'SNPS', 'TEAM', 'TMUS', 'TSLA',
+        'TTD', 'TTWO', 'TXN', 'VRSK', 'VRTX', 'WBD', 'WDAY', 'XEL', 'ZS'
+    ]
+    
+    crypto_tickers = [
+        'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'SOL-USD', 'XAUT-USD'
+    ]
+    
     return nasdaq_tickers + crypto_tickers
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def analyze_timeframe(df, period_name):
-    if len(df) < 50:
+# ================= CÁLCULO TÉCNICO =================
+def calculate_indicators(df):
+    """Calcula EMAs, RSI y Soportes/Resistencias."""
+    if df is None or len(df) < 200:
         return None
     
+    # EMAs
     df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
     df['EMA_31'] = df['Close'].ewm(span=31, adjust=False).mean()
     df['EMA_150'] = df['Close'].ewm(span=150, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    df['RSI'] = calculate_rsi(df['Close'])
     
-    last_row = df.iloc[-1]
+    # RSI (14 períodos)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
     
-    def clean_val(val):
-        if isinstance(val, pd.Series):
-            return float(val.iloc[0])
-        return float(val)
+    # Soporte dinámico (mínimo de las últimas 20 velas)
+    df['Support'] = df['Low'].rolling(window=20).min()
+    
+    return df
 
-    price = clean_val(last_row['Close'])
-    ema_21 = clean_val(last_row['EMA_21'])
-    ema_31 = clean_val(last_row['EMA_31'])
-    ema_150 = clean_val(last_row['EMA_150'] if not pd.isna(last_row['EMA_150']) else price)
-    ema_200 = clean_val(last_row['EMA_200'] if not pd.isna(last_row['EMA_200']) else price)
-    rsi = clean_val(last_row['RSI'] if not pd.isna(last_row['RSI']) else 50)
-
-    recent_df = df.tail(20)
-    support = clean_val(recent_df['Low'].min())
-    resistance = clean_val(recent_df['High'].max())
-
-    entry_low = round(support, 2)
-    entry_high = round(support + (price - support) * 0.35, 2)
-    in_range = (entry_low <= price <= entry_high)
-
-    rsi_status = "Sobrecomprada" if rsi > 70 else ("Sobrevendida" if rsi < 30 else "Neutra")
-
-    return {
-        'TF': period_name,
-        'Precio': round(price, 2),
-        'EMA_21_31': ema_21 > ema_31,
-        'Price_150_200': (price > ema_150) and (price > ema_200),
-        'RSI': round(rsi, 1),
-        'RSI_Status': rsi_status,
-        'Soporte': support,
-        'Resistencia': resistance,
-        'Entrada_Str': f"${entry_low} -${entry_high}",
-        'In_Range': in_range
+def analyze_asset(ticker):
+    """Descarga datos y evalúa las condiciones en temporalidades 1D, 4H y 1H."""
+    timeframes = {'1D': '1d', '4H': '60m', '1H': '60m'} # Nota: yfinance maneja 60m para intradía
+    
+    # Usaremos un diccionario de temporalidades ajustadas para yfinance
+    tf_configs = {
+        '1D': {'interval': '1d', 'period': '1y'},
+        '4H': {'interval': '1h', 'period': '60d'}, # Simulación o datos por hora
+        '1H': {'interval': '60m', 'period': '30d'}
     }
 
-def send_telegram_message(token, chat_id, text):
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"Error al enviar Telegram: {e}")
+    for tf, config in tf_configs.items():
+        try:
+            df = yf.download(ticker, interval=config['interval'], period=config['period'], progress=False)
+            if df.empty or len(df) < 200:
+                continue
+                
+            # Limpiar multiindex si yfinance lo devuelve
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df = calculate_indicators(df)
+            if df is None:
+                continue
+                
+            last = df.iloc[-1]
+            price = last['Close']
+            ema21 = last['EMA_21']
+            ema31 = last['EMA_31']
+            ema150 = last['EMA_150']
+            ema200 = last['EMA_200']
+            rsi = last['RSI']
+            support = last['Support']
+            
+            # --- CONDICIONES TÉCNICAS ---
+            # 1. Tendencia Corto Plazo: EMA 21 > EMA 31
+            cond_ema_short = ema21 > ema31
+            # 2. Tendencia Largo Plazo: Precio > EMA 150 y EMA 200
+            cond_ema_long = (price > ema150) and (price > ema200)
+            
+            # 3. Zona de Entrada Óptima (Pullback al soporte con un margen del 35% hacia arriba)
+            upper_entry_zone = support + ((price - support) * 0.35)
+            cond_entry_zone = (price >= support) and (price <= upper_entry_zone)
+            
+            if cond_ema_short and cond_ema_long and cond_entry_zone:
+                # Determinar estado del RSI
+                rsi_status = "Neutra"
+                if rsi > 70:
+                    rsi_status = "Sobrecomprada"
+                elif rsi < 30:
+                    rsi_status = "Sobrevendida"
+                
+                # Formatear mensaje de alerta
+                msg = (
+                    f"🚨 *¡ALERTA DE ENTRADA TÉCNICA!* 🚨\n\n"
+                    f"📈 *Activo:* `{ticker}`\n"
+                    f"⏱ *Temporalidad:* `{tf}`\n"
+                    f"💵 *Precio Actual:* `${price:,.2f}`\n"
+                    f"🎯 *Soporte Clave:* `${support:,.2f}`\n"
+                    f"📊 *RSI:* `{rsi:.1f}` ({rsi_status})\n\n"
+                    f"_El precio está testeando la zona óptima de pullback._"
+                )
+                send_telegram_message(msg)
+                print(f"[ALERTA ENVIADA] {ticker} en {tf}")
+
+        except Exception as e:
+            print(f"Error analizando {ticker} en {tf}: {e}")
 
 def main():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    
+    print("Iniciando escaneo de mercado...")
     tickers = get_all_assets_tickers()
-    print(f"Iniciando escaneo de {len(tickers)} activos...")
+    print(f"Total de activos a escanear: {len(tickers)}")
     
-    alerts_sent = 0
-
     for ticker in tickers:
-        try:
-            df_1d = yf.download(ticker, period='2y', interval='1d', progress=False)
-            df_1h = yf.download(ticker, period='60d', interval='1h', progress=False)
-
-            if df_1d.empty or df_1h.empty:
-                continue
-
-            if isinstance(df_1d.columns, pd.MultiIndex):
-                df_1d.columns = df_1d.columns.get_level_values(0)
-            if isinstance(df_1h.columns, pd.MultiIndex):
-                df_1h.columns = df_1h.columns.get_level_values(0)
-
-            df_4h = df_1h.resample('4h').agg({
-                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-            }).dropna()
-
-            analyses = [
-                analyze_timeframe(df_1d, "1D"),
-                analyze_timeframe(df_4h, "4H"),
-                analyze_timeframe(df_1h, "1H")
-            ]
-
-            for res in analyses:
-                if res:
-                    # Condición estricta requerida
-                    if res['EMA_21_31'] and res['Price_150_200']:
-                        # Si además está en rango de entrada, mandamos alerta
-                        if res['In_Range'] and token and chat_id:
-                            msg = (
-                                f"🚨 *¡ALERTA DE ENTRADA TÉCNICA!* 🚨\n\n"
-                                f"📈 *Activo:* `{ticker}`\n"
-                                f"⏱ *Temporalidad:* `{res['TF']}`\n"
-                                f"💵 *Precio Actual:* `${res['Precio']:,}`\n"
-                                f"🎯 *Zona de Entrada:* `{res['Entrada_Str']}`\n"
-                                f"🛡 *Soporte:* `${res['Soporte']:,}`\n"
-                                f"📊 *RSI:* `{res['RSI']}` ({res['RSI_Status']})\n\n"
-                                f"_El precio está en zona óptima de pullback._"
-                            )
-                            send_telegram_message(token, chat_id, msg)
-                            alerts_sent += 1
-        except Exception:
-            continue
-
-    print(f"Escaneo finalizado. Alertas enviadas: {alerts_sent}")
+        print(f"Escaneando {ticker}...")
+        analyze_asset(ticker)
+        
+    print("Escaneo finalizado.")
 
 if __name__ == "__main__":
     main()
